@@ -59,7 +59,7 @@ func createClusterCmd(g *cmdutils.Grouping) *cobra.Command {
 	group := g.New(cmd)
 
 	exampleClusterName := utils.ClusterName("", "")
-	exampleNodeGroupName := NodeGroupName("", "")
+	exampleNodeGroupName := utils.NodeGroupName("", "")
 
 	group.InFlagSet("General", func(fs *pflag.FlagSet) {
 		fs.StringVarP(&cfg.Metadata.Name, "name", "n", "", fmt.Sprintf("EKS cluster name (generated if unspecified, e.g. %q)", exampleClusterName))
@@ -103,72 +103,14 @@ func createClusterCmd(g *cmdutils.Grouping) *cobra.Command {
 }
 
 func doCreateCluster(p *api.ProviderConfig, cfg *api.ClusterConfig, nameArg string, cmd *cobra.Command) error {
-
 	ngFilter := cmdutils.NewNodeGroupFilter()
+	ngFilter.SkipAll = withoutNodeGroup
 
-	cfgLoader := cmdutils.NewClusterConfigLoader(p, cfg, clusterConfigFile, cmd)
-
-	cfgLoader.FlagsIncompatibleWithConfigFile.Insert(
-		"tags",
-		"zones",
-		"nodes",
-		"nodes-min",
-		"nodes-max",
-		"node-type",
-		"node-volume-size",
-		"node-volume-type",
-		"max-pods-per-node",
-		"node-ami",
-		"node-ami-family",
-		"ssh-access",
-		"ssh-public-key",
-		"node-private-networking",
-		"node-security-groups",
-		"node-labels",
-		"node-zones",
-		"asg-access",
-		"external-dns-access",
-		"full-ecr-access",
-		"storage-class",
-		"vpc-private-subnets",
-		"vpc-public-subnets",
-		"vpc-cidr",
-		"vpc-from-kops-cluster",
-	)
-
-	cfgLoader.ValidateWithConfigFile = func() error {
-		if cfg.VPC == nil {
-			cfg.VPC = api.NewClusterVPC()
-		}
-
-		if checkSubnetsGiven(cfg) && len(cfg.AvailabilityZones) != 0 {
-			return fmt.Errorf("vpc.subnets and availabilityZones cannot be set at the same time")
-		}
-
-		skipNodeGroupsIfRequested(cfg)
-
-		return setNodeGroupDefaults(ngFilter, cfg.NodeGroups)
+	if err := cmdutils.NewCreateClusterLoader(p, cfg, clusterConfigFile, nameArg, cmd, ngFilter).Load(); err != nil {
+		return err
 	}
 
-	cfgLoader.ValidateWithoutConfigFile = func() error {
-		meta := cfg.Metadata
-
-		// generate cluster name or use either flag or argument
-		if utils.ClusterName(meta.Name, nameArg) == "" {
-			return cmdutils.ErrNameFlagAndArg(meta.Name, nameArg)
-		}
-		meta.Name = utils.ClusterName(meta.Name, nameArg)
-
-		if cfg.Status != nil {
-			return fmt.Errorf("status fields are read-only")
-		}
-
-		skipNodeGroupsIfRequested(cfg)
-
-		return configureNodeGroups(ngFilter, cfg.NodeGroups, cmd)
-	}
-
-	if err := cfgLoader.Load(); err != nil {
+	if err := ngFilter.ValidateNodeGroupsAndSetDefaults(cfg.NodeGroups); err != nil {
 		return err
 	}
 
@@ -219,7 +161,7 @@ func doCreateCluster(p *api.ProviderConfig, cfg *api.ClusterConfig, nameArg stri
 			}
 		}
 	}
-	subnetsGiven := checkSubnetsGiven(cfg) // this will be false when neither flags nor config has any subnets
+	subnetsGiven := cfg.HasAnySubnets() // this will be false when neither flags nor config has any subnets
 
 	createOrImportVPC := func() error {
 
